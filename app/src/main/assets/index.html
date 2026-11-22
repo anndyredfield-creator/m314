@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b0f08">
+<title>M314 Detector de Movimento</title>
+<style>
+:root{color-scheme:dark;--bg:#0b0f08;--fg:#c8e86a;--dim:#4f6a22;--warn:#ffb000;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font-family:"Courier New",monospace}
+body{display:flex;flex-direction:column;align-items:center;justify-content:space-between;padding:12px;gap:10px}
+h1{font-size:15px;letter-spacing:3px;margin:0;text-align:center}
+h1 small{display:block;color:var(--dim);font-size:11px;letter-spacing:2px}
+#r{border:2px solid var(--dim);border-radius:8px;background:#060903;max-width:100%}
+.row{display:flex;gap:8px;width:100%;max-width:420px}
+.box{flex:1;border:1px solid var(--dim);border-radius:6px;padding:6px;text-align:center}
+.box b{display:block;font-size:22px}
+.box span{font-size:10px;color:var(--dim);letter-spacing:2px}
+#st.alert{color:var(--warn)}
+label{width:100%;max-width:420px;font-size:11px;letter-spacing:2px;color:var(--dim)}
+input[type=range]{width:100%;accent-color:var(--fg)}
+button{width:100%;max-width:420px;padding:14px;font:bold 16px "Courier New",monospace;letter-spacing:3px;color:var(--bg);background:var(--fg);border:0;border-radius:8px}
+#msg{font-size:11px;color:var(--warn);min-height:14px;text-align:center}
+video{display:none}
+</style>
+</head>
+<body>
+<h1>M314 MOTION TRACKER<small>AREA DE VARREDURA 30 M</small></h1>
+<canvas id="r"></canvas>
+<div class="row">
+  <div class="box"><b id="dist">--</b><span>DIST (M)</span></div>
+  <div class="box"><b id="brg">--</b><span>AZIMUTE</span></div>
+  <div class="box"><b id="st">OFF</b><span>STATUS</span></div>
+</div>
+<label>SENSIBILIDADE<input id="sens" type="range" min="10" max="100" value="60"></label>
+<div id="msg"></div>
+<button id="go">INICIAR</button>
+<video id="v" playsinline muted></video>
+<script>
+var cv=document.getElementById('r'),c=cv.getContext('2d'),v=document.getElementById('v');
+var A=Math.PI*40/180,w=0,h=0,R=0,ox=0,oy=0,dpr=window.devicePixelRatio||1;
+function fit(){var s=Math.min(window.innerWidth-24,420);w=s;h=Math.round(s*0.8);
+  cv.style.width=w+'px';cv.style.height=h+'px';cv.width=w*dpr;cv.height=h*dpr;
+  c.setTransform(dpr,0,0,dpr,0,0);R=Math.min(h-16,(w/2-8)/Math.sin(A));ox=w/2;oy=h-8}
+fit();window.addEventListener('resize',fit);
+
+var GW=48,GH=36,oc=document.createElement('canvas');oc.width=GW;oc.height=GH;
+var o=oc.getContext('2d',{willReadFrequently:true});
+var prev=null,blips=[],last=null,lastSeen=0,nextBeep=0,lastFrame=0,running=false,actx=null,sweep=0;
+var el={d:document.getElementById('dist'),b:document.getElementById('brg'),s:document.getElementById('st'),m:document.getElementById('msg')};
+
+function analyze(){
+  o.drawImage(v,0,0,GW,GH);
+  var d=o.getImageData(0,0,GW,GH).data,g=new Uint8Array(GW*GH),i;
+  for(i=0;i<g.length;i++)g[i]=d[i*4]*0.3+d[i*4+1]*0.59+d[i*4+2]*0.11;
+  var res=null;
+  if(prev){
+    var sens=+document.getElementById('sens').value,thr=62-sens*0.5,n=0,sx=0,sy=0;
+    for(i=0;i<g.length;i++){if(Math.abs(g[i]-prev[i])>thr){n++;sx+=i%GW;sy+=(i/GW)|0}}
+    var tot=GW*GH;
+    if(n>tot*0.6)res={shake:true};
+    else if(n>=3)res={n:n,x:sx/n/GW,p:Math.min(1,n/(tot*0.18))};
+  }
+  prev=g;return res;
+}
+
+function beep(p){
+  if(!actx)return;
+  var t=actx.currentTime,os=actx.createOscillator(),gn=actx.createGain();
+  os.type='sine';os.frequency.value=1100+p*500;
+  gn.gain.setValueAtTime(0,t);gn.gain.linearRampToValueAtTime(0.5,t+0.005);
+  gn.gain.exponentialRampToValueAtTime(0.001,t+0.09);
+  os.connect(gn);gn.connect(actx.destination);os.start(t);os.stop(t+0.1);
+  if(navigator.vibrate)navigator.vibrate(20);
+}
+
+function draw(now){
+  c.clearRect(0,0,w,h);
+  c.strokeStyle='#4f6a22';c.lineWidth=1;
+  for(var k=1;k<=4;k++){c.beginPath();c.arc(ox,oy,R*k/4,-Math.PI/2-A,-Math.PI/2+A);c.stroke()}
+  [-A,0,A].forEach(function(a){c.beginPath();c.moveTo(ox,oy);c.lineTo(ox+Math.sin(a)*R,oy-Math.cos(a)*R);c.stroke()});
+  if(running){
+    sweep=(now/1800)%2;var sa=(sweep<1?sweep:2-sweep)*2*A-A;
+    var gr=c.createLinearGradient(ox,oy,ox+Math.sin(sa)*R,oy-Math.cos(sa)*R);
+    gr.addColorStop(0,'rgba(200,232,106,0)');gr.addColorStop(1,'rgba(200,232,106,0.55)');
+    c.strokeStyle=gr;c.lineWidth=2;c.beginPath();c.moveTo(ox,oy);c.lineTo(ox+Math.sin(sa)*R,oy-Math.cos(sa)*R);c.stroke();
+  }
+  blips=blips.filter(function(b){return now-b.t<2200});
+  blips.forEach(function(b){
+    var f=1-(now-b.t)/2200,rr=b.d*R,x=ox+Math.sin(b.a)*rr,y=oy-Math.cos(b.a)*rr;
+    c.fillStyle='rgba(255,176,0,'+f+')';c.beginPath();c.arc(x,y,3+b.p*6,0,7);c.fill();
+    c.strokeStyle='rgba(255,176,0,'+f*0.5+')';c.beginPath();c.arc(x,y,6+b.p*10*(1-f),0,7);c.stroke();
+  });
+}
+
+function loop(now){
+  requestAnimationFrame(loop);
+  if(running&&now-lastFrame>66){
+    lastFrame=now;var r=analyze();
+    if(r&&r.shake){el.s.textContent='ESTAVEL?';el.s.className='alert';el.m.textContent='Segure o celular parado.';}
+    else if(r){
+      var a=(r.x-0.5)*2*A,d=1-r.p;
+      last={a:a,d:d,p:r.p};lastSeen=now;
+      blips.push({a:a,d:d,p:r.p,t:now});if(blips.length>40)blips.shift();
+      el.d.textContent=(d*30).toFixed(1);el.b.textContent=Math.round(a*180/Math.PI)+'\u00b0';
+      el.s.textContent='CONTATO';el.s.className='alert';el.m.textContent='';
+    }else if(now-lastSeen>700){
+      last=null;el.d.textContent='--';el.b.textContent='--';el.s.textContent='LIVRE';el.s.className='';el.m.textContent='';
+    }
+  }
+  if(last&&now>nextBeep){beep(last.p);nextBeep=now+1300-last.p*1180}
+  draw(now);
+}
+requestAnimationFrame(loop);
+
+document.getElementById('go').onclick=async function(){
+  var b=this;
+  if(running){running=false;v.srcObject.getTracks().forEach(function(t){t.stop()});b.textContent='INICIAR';el.s.textContent='OFF';return}
+  try{
+    actx=actx||new (window.AudioContext||window.webkitAudioContext)();actx.resume();
+    var s=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment',width:320,height:240},audio:false});
+    v.srcObject=s;await v.play();prev=null;running=true;b.textContent='PARAR';el.s.textContent='LIVRE';
+    try{if(navigator.wakeLock)await navigator.wakeLock.request('screen')}catch(e){}
+  }catch(e){el.m.textContent='Permita o acesso a camera para usar o detector.'}
+};
+</script>
+</body>
+</html>
